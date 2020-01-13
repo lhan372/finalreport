@@ -1,0 +1,741 @@
+---
+title: Association of childhood obesity rates with local characteristics for Year
+  6 primary school children in England
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE,message=FALSE,warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#library(rmarkdown)
+output_dir <- "../output"
+```
+
+Packages
+```{r message=FALSE,warning=FALSE}
+#Load all packages
+library(plotrix)
+library(arulesViz)
+#devtools::install_github("rsquaredacademy/olsrr")
+library(reshape2) 
+library(ggcorrplot)
+library(spatialreg)
+library(rgdal)
+library(spgwr)
+library(car)
+library(caret)
+library(spdep)
+library(tidyr)
+library(olsrr)
+library(car)
+library(ggplot2)
+library(corrplot)
+library(janitor)
+library(maptools)
+library(RColorBrewer)
+library(classInt)
+library(OpenStreetMap)
+library(sp)
+library(rgeos)
+library(tmap)
+library(tmaptools)
+library(sf)
+library(rgdal)
+library(geojsonio)
+library(openxlsx)
+library(plotly)
+library(tidyverse)
+library(dplyr)
+library(assertive)
+library(plyr)
+library(naniar)
+```
+
+## SECTION 1: Data management
+Read in national child measurement data and convert to a data frame.
+```{r message=FALSE,results=='hide',warning=FALSE}
+######Read in national child measurement data and convert to a data frame.
+obesitydata<-read.csv("data/yr6_childmeasurement201819.csv")
+obesitydata<-data.frame(obesitydata)
+childdata<-obesitydata[-grep("^E1",obesitydata[,2]),]
+childdata<- childdata %>% dplyr::filter(!(ONS.Code==""))
+```
+
+Rename LA variable and more data cleasning.
+
+```{r message=FALSE,warning=FALSE}
+#Rename LA variable
+names(childdata)[1] <- c("LA")
+childdata<- childdata %>% dplyr::filter(!(LA=="ENGLAND1"))
+class(childdata)
+#check dataset
+names(childdata)
+summary(childdata)
+#Rename ons code variable
+names(childdata)[2] <- c("2011GSS_CODE")
+
+
+
+#Keep obesity related variables to reduce size of file.
+childdata<- childdata[,c( "LA","2011GSS_CODE","Obese_percent","overandobese_percent", "Severely.obese_percent", "Total.number.of.children")]    
+#Change variables into numeric variables
+childdata$Obese_percent_num <- as.numeric(childdata$"Obese_percent")
+str(childdata)
+
+childdata$Severely.obese_percent<- revalue(childdata$"Severely.obese_percent", c("x"="0"))
+childdata$Severely.obese_percentnum <-as.numeric(paste((childdata$"Severely.obese_percent")))
+#Create obesity rate variable.
+childdata$obesity_rate<- childdata$Obese_percent_num +childdata$Severely.obese_percentnum
+childdata<- childdata[,c( "LA","2011GSS_CODE","Obese_percent","overandobese_percent", "obesity_rate", "Total.number.of.children")]   
+
+
+#NCMP data uses 2011 LA ecode, LA code changed for 2019, need to add in new code to allow IMD variables to be fully merged.
+childdata$GSS_CODE<- (childdata$"2011GSS_CODE")
+#New 2019 code: E06000058 - Bournemouth, Christchurch and Poole - new unitary authority instead of:
+#Old code:E06000028	Bournemouth,E06000029	Poole,E07000048	Christchurch
+childdata$GSS_CODE<- revalue(childdata$"GSS_CODE", c("E06000028"="E06000058","E06000029"="E06000058","E07000048"="E06000058"))
+
+#New 2019 code:E06000059 - Dorset - new unitary authority - (Dorset county abolished)
+#Old code:E07000049	East Dorset,E07000050	North Dorset,E07000051	Purbeck,E07000052	West Dorset,E07000053	Weymouth and Portland
+childdata$GSS_CODE<- revalue(childdata$"GSS_CODE", c("E07000049"="E06000059","E07000050"="E06000059","E07000051"="E06000059",
+                                                     "E07000052"="E06000059","E07000053"="E06000059"))
+
+
+#New 2019 code:E07000244 - East Suffolk - new local authority district (Suffolk Coastal and Waveney districts abolished)
+#Old code:E07000205	Suffolk Coastal,E07000206	Waveney
+childdata$GSS_CODE<- revalue(childdata$"GSS_CODE", c("E07000205"="E07000244","E07000206"="E07000244"))
+
+
+#New 2019 code:E07000245 - West Suffolk - new local authority district (Forest Heath and St Edmundsbury districts abolished)
+#Old code:E07000201	Forest Heath,E07000204	St. Edmundsbury
+childdata$GSS_CODE<- revalue(childdata$"GSS_CODE", c("E07000201"="E07000245","E07000204"="E07000245"))
+
+#New 2019 code:E07000246 - Somerset West and Taunton - new local authority district (Taunton Deane and West Somerset districts abolished)
+#Old code:E07000190	Taunton Deane,E07000191	West Somerset
+childdata$GSS_CODE<- revalue(childdata$"GSS_CODE", c("E07000190"="E07000246","E07000191"="E07000246"))
+
+#####Fast food shop density file
+fastfood<-read.csv("data/fastfood_outlet.csv")
+fastfood<-data.frame(fastfood)
+is.na(fastfood) <- fastfood == "*"
+fastfood$fast_food_density<-as.numeric(paste((fastfood$"Rate.per.100.000.population")))
+#La code for this data is for 2018, change some of the codes to 2011 La code to allow full merge into main data.
+#change E06000048	Northumberland to	E06000057
+#change E07000097	East Hertfordshire	to	E07000242
+#change E07000100	St Albans	to	E07000240
+#change E07000101	Stevenage	to	E07000243
+#change E07000104	Welwyn Hatfield	to	E07000241
+#change E08000020	Gateshead	to	E08000037
+fastfood$LA.code<- revalue(fastfood$"LA.code", c("E06000048"="E06000057"))
+fastfood$LA.code<- revalue(fastfood$"LA.code", c("E07000097"="E07000242"))
+fastfood$LA.code<- revalue(fastfood$"LA.code", c("E07000100"="E07000240"))
+fastfood$LA.code<- revalue(fastfood$"LA.code", c("E07000101"="E07000243"))
+fastfood$LA.code<- revalue(fastfood$"LA.code", c("E07000104"="E07000241"))
+fastfood$LA.code<- revalue(fastfood$"LA.code", c("E08000020"="E08000037"))
+names(fastfood)[2] <- c("2011GSS_CODE")
+#Merge into main data.
+childdata <- merge(x = childdata, y = fastfood, by = "2011GSS_CODE", all.x = TRUE)
+
+#####Ethnicity data uses the 2011 ecode as well, merge in ethnicity data first.
+ethnicity<-read.csv("data/census_ethnicity.csv")
+ethnicity<-data.frame(ethnicity)
+names(ethnicity)[3] <- c("2011GSS_CODE")
+#Only keep variables of interest to reduce size of data.
+ethnicity_por<- ethnicity[,c("2011GSS_CODE","Sex..All.persons..Age..Age.0.to.24..Ethnic.Group..All.categories..Ethnic.group..measures..Value",
+                             "Sex..All.persons..Age..Age.0.to.24..Ethnic.Group..White..Total..measures..Value", 
+                             "Sex..All.persons..Age..Age.0.to.24..Ethnic.Group..Mixed.multiple.ethnic.group..Total..measures..Value",
+                             "Sex..All.persons..Age..Age.0.to.24..Ethnic.Group..Asian.Asian.British..Total..measures..Value",
+                             "Sex..All.persons..Age..Age.0.to.24..Ethnic.Group..Black.African.Caribbean.Black.British..Total..measures..Value",
+                             "Sex..All.persons..Age..Age.0.to.24..Ethnic.Group..Other.ethnic.group..Total..measures..Value")]
+
+
+#Merge with main dataset
+childdata2 <- merge(x = childdata, y = ethnicity_por, by = "2011GSS_CODE", all.x = TRUE)
+
+
+#Summarise the ethnicity and obesity data for the unitary local authorites that were combined in 2019.
+childdata2 <-data.frame(aggregate(. ~ GSS_CODE,childdata2, sum))
+
+#Create percentage variables for each ethnic group.
+childdata2$percent_white<- childdata2[[ "Sex..All.persons..Age..Age.0.to.24..Ethnic.Group..White..Total..measures..Value"]]/childdata2[["Sex..All.persons..Age..Age.0.to.24..Ethnic.Group..All.categories..Ethnic.group..measures..Value"]]
+childdata2$percent_mix<- childdata2[["Sex..All.persons..Age..Age.0.to.24..Ethnic.Group..Mixed.multiple.ethnic.group..Total..measures..Value"]]/childdata2[["Sex..All.persons..Age..Age.0.to.24..Ethnic.Group..All.categories..Ethnic.group..measures..Value"]]
+childdata2$percent_asian<- childdata2[["Sex..All.persons..Age..Age.0.to.24..Ethnic.Group..Asian.Asian.British..Total..measures..Value"]]/childdata2[["Sex..All.persons..Age..Age.0.to.24..Ethnic.Group..All.categories..Ethnic.group..measures..Value"]]
+childdata2$percent_african<- childdata2[[ "Sex..All.persons..Age..Age.0.to.24..Ethnic.Group..Black.African.Caribbean.Black.British..Total..measures..Value"]]/childdata2[["Sex..All.persons..Age..Age.0.to.24..Ethnic.Group..All.categories..Ethnic.group..measures..Value"]]
+
+
+
+
+#New 2019 code: E06000058 - Bournemouth, Christchurch and Poole - new unitary authority instead of:
+#Old code:E06000028	Bournemouth,E06000029	Poole,E07000048	Christchurch
+
+childdata2$obesity_rate<- with(childdata2, ifelse(GSS_CODE=='E06000058',(childdata2$obesity_rate)/3,obesity_rate))
+childdata2$fast_food_density<- with(childdata2, ifelse(GSS_CODE=='E06000058',(childdata2$fast_food_density)/3,fast_food_density))
+
+#New 2019 code:E06000059 - Dorset - new unitary authority - (Dorset county abolished)
+#Old code:E07000049	East Dorset,E07000050	North Dorset,E07000051	Purbeck,E07000052	West Dorset,E07000053	Weymouth and Portland
+
+childdata2$obesity_rate<- with(childdata2, ifelse(GSS_CODE=='E06000059',(childdata2$obesity_rate)/5,obesity_rate))
+childdata2$fast_food_density<- with(childdata2, ifelse(GSS_CODE=='E06000059',(childdata2$fast_food_density)/5,fast_food_density))
+#New 2019 code:E07000244 - East Suffolk - new local authority district (Suffolk Coastal and Waveney districts abolished)
+#Old code:E07000205	Suffolk Coastal,E07000206	Waveney
+childdata2$obesity_rate<- with(childdata2, ifelse(GSS_CODE=='E07000244',(childdata2$obesity_rate)/2,obesity_rate))
+childdata2$fast_food_density<- with(childdata2, ifelse(GSS_CODE=='E07000244',(childdata2$fast_food_density)/2,fast_food_density))
+#New 2019 code:E07000245 - West Suffolk - new local authority district (Forest Heath and St Edmundsbury districts abolished)
+#Old code:E07000201	Forest Heath,E07000204	St. Edmundsbury
+childdata2$obesity_rate<- with(childdata2, ifelse(GSS_CODE=='E07000245',(childdata2$obesity_rate)/2,obesity_rate))
+childdata2$fast_food_density<- with(childdata2, ifelse(GSS_CODE=='E07000245',(childdata2$fast_food_density)/2,fast_food_density))
+
+#New 2019 code:E07000246 - Somerset West and Taunton - new local authority district (Taunton Deane and West Somerset districts abolished)
+#Old code:E07000190	Taunton Deane,E07000191	West Somerset
+childdata2$obesity_rate<- with(childdata2, ifelse(GSS_CODE=='E07000246',(childdata2$obesity_rate)/2,obesity_rate))
+childdata2$fast_food_density<- with(childdata2, ifelse(GSS_CODE=='E07000246',(childdata2$fast_food_density)/2,fast_food_density))
+
+######Read in multiple excel tabs for the imd data.
+
+IMD_income <- read.xlsx('data/IMD2019.xlsx',sheet=3)
+IMD_employ <- read.xlsx('data/IMD2019.xlsx',sheet=4)
+IMD_edu <- read.xlsx('data/IMD2019.xlsx',sheet=5)
+IMD_health <- read.xlsx('data/IMD2019.xlsx',sheet=6)
+IMD_crime <- read.xlsx('data/IMD2019.xlsx',sheet=7)
+IMD_barriers <- read.xlsx('data/IMD2019.xlsx',sheet=8)
+IMD_living <- read.xlsx('data/IMD2019.xlsx',sheet=9)
+IMD_idaci <- read.xlsx('data/IMD2019.xlsx',sheet=10)
+#Put data into data frames.
+
+IMD_income <- data.frame(IMD_income)
+IMD_employ <- data.frame(IMD_employ)
+IMD_edu <- data.frame(IMD_edu)
+IMD_health <- data.frame(IMD_health)
+IMD_crime <- data.frame(IMD_crime)
+IMD_barriers <- data.frame(IMD_barriers)
+IMD_living <- data.frame(IMD_living)
+IMD_idaci <- data.frame(IMD_idaci)
+
+#Rename ons code variable
+names(childdata)[2] <- c("GSS_CODE")
+names(IMD_income)[1] <- c("GSS_CODE")
+names(IMD_employ)[1] <- c("GSS_CODE")
+names(IMD_edu)[1] <- c("GSS_CODE")
+names(IMD_health)[1] <- c("GSS_CODE")
+names(IMD_crime)[1] <- c("GSS_CODE")
+names(IMD_barriers)[1] <- c("GSS_CODE")
+names(IMD_living)[1] <- c("GSS_CODE")
+names(IMD_idaci)[1] <- c("GSS_CODE")
+#Remove duplicate variables in these files.
+IMD_income <-within(IMD_income, rm("Local.Authority.District.name..2019."))
+IMD_employ <-within(IMD_employ , rm("Local.Authority.District.name..2019."))
+IMD_edu <-within(IMD_edu, rm("Local.Authority.District.name..2019."))
+IMD_health <-within(IMD_health, rm("Local.Authority.District.name..2019."))
+IMD_crime <-within(IMD_crime, rm("Local.Authority.District.name..2019."))
+IMD_barriers <-within(IMD_barriers, rm("Local.Authority.District.name..2019."))
+IMD_living <-within(IMD_living, rm("Local.Authority.District.name..2019."))
+IMD_idaci <-within(IMD_idaci, rm("Local.Authority.District.name..2019."))
+
+
+
+
+#Merge the datasets
+childdata2 <- merge(x = childdata2, y = IMD_income, by = "GSS_CODE", all.x = TRUE)
+childdata2 <- merge(x = childdata2, y = IMD_employ, by = "GSS_CODE", all.x = TRUE)
+childdata2 <- merge(x = childdata2, y = IMD_edu, by = "GSS_CODE", all.x = TRUE)
+childdata2 <- merge(x = childdata2, y = IMD_health, by = "GSS_CODE", all.x = TRUE)
+childdata2 <- merge(x = childdata2, y = IMD_crime, by = "GSS_CODE", all.x = TRUE)
+childdata2 <- merge(x = childdata2, y = IMD_barriers, by = "GSS_CODE", all.x = TRUE)
+childdata2 <- merge(x = childdata2, y = IMD_living, by = "GSS_CODE", all.x = TRUE)
+childdata2 <- merge(x = childdata2, y = IMD_idaci, by = "GSS_CODE", all.x = TRUE)
+
+
+
+#Physical activity data
+activity <- read.xlsx('data/childactivity.xlsx',sheet=1)
+activity<-data.frame(activity)
+exercise<- activity[,c("La","GSS_CODE","X60minplus_Rate....","fairly_active_Rate....","Less_active_Rate....")]
+is.na(exercise) <- exercise == "^"
+is.na(exercise) <- exercise == "*"
+exercise$active_rate <-as.numeric(paste((exercise$"X60minplus_Rate....")))
+exercise$fairly_active_rate <-as.numeric(paste((exercise$"fairly_active_Rate....")))
+exercise$less_active_rate <-as.numeric(paste((exercise$"Less_active_Rate....")))
+exercise<- exercise[,c("La","GSS_CODE","active_rate", "fairly_active_rate","less_active_rate")]
+#Merge with main dataset
+childdata2 <- merge(x = childdata2, y =exercise, by = "GSS_CODE", all.x = TRUE)
+
+#Keep only relavent IMD variables. We will use the score variables.
+childdata2<- childdata2[,c("GSS_CODE","obesity_rate","fast_food_density","active_rate",
+                           "percent_white",                                                                                  
+                           "percent_mix",                                                                                   
+                           "percent_asian",                                                                                  
+                           "percent_african",
+                           "Income...Average.rank",
+                           "Employment...Average.rank",
+                           "Education..Skills.and.Training...Average.rank",
+                           "Health.Deprivation.and.Disability...Average.rank",
+                           "Crime...Average.rank",
+                           "Barriers.to.Housing.and.Services...Average.rank",
+                           "Living.Environment...Average.rank",
+                           "IDACI...Average.rank",
+                           "Income...Average.score",
+                           "Employment...Average.score",
+                           "Education..Skills.and.Training...Average.score",
+                           "Health.Deprivation.and.Disability...Average.score",
+                           "Crime...Average.score",
+                           "Barriers.to.Housing.and.Services...Average.score",
+                           "Living.Environment...Average.score",
+                           "IDACI...Average.score",
+                           "fairly_active_rate","less_active_rate" )]
+names(childdata2)
+#Rename variables with clearer names.
+
+
+names(childdata2)[3] <- "Density of fast food outlets"
+names(childdata2)[4] <- "Active rate"
+names(childdata2)[5] <- "Percentage of White children"
+names(childdata2)[6] <- "Percentage of Mixed children"
+names(childdata2)[7] <- "Percentage of Asian children"
+names(childdata2)[8] <- "Percentage of African children"
+names(childdata2)[17] <- "IMD income average score"
+names(childdata2)[18] <- "IMD employment average score"
+names(childdata2)[19] <- "IMD education average score"
+names(childdata2)[20] <- "IMD health average score"
+names(childdata2)[21] <- "IMD crime average score"
+names(childdata2)[22] <- "IMD housing average score"
+names(childdata2)[23] <- "IMD living average score"
+names(childdata2)[24] <- "IMD IDACI average score"
+names(childdata2)[25] <- "Fairly active rate"
+names(childdata2)[26] <- "Less active rate"
+
+```
+## SECTION 2: Regression analysis
+
+Check dependent variable is normal.Appendix Figure A1
+```{r warning=FALSE}
+#Check dependent variable is normal.
+boxplot(childdata2$obesity_rate,main="Boxplot of obesity rate")
+```
+
+Check transformations of dependent variable and see which one will be normal.
+Appendix Figure A1
+```{r warning=FALSE}
+#Check transformations of dependent variable and see which one will be normal.
+symbox(~`obesity_rate`, childdata2, na.rm=T, powers=seq(-3,3,by=.5),main="Types of transformation",ylab="Obesity rate", xlab="Power of transformation")
+```
+
+
+```{r warning=FALSE}
+#Based on this, use square root instead.
+childdata2$root_ob<- sqrt(childdata2$obesity_rate)
+boxplot(childdata2$root_ob,main="Boxplot of transformed obesity rate")
+```
+
+
+```{r include=FALSE,message=FALSE,warning=FALSE}
+#Read in Shapefile.
+
+EW <- geojsonio::geojson_read("https://opendata.arcgis.com/datasets/c7ccadc7024c4df58f9dfdc07c9acab5_0.geojson", what = "sp")
+
+ENGLANDMapSF <- st_as_sf(EW)
+
+ENGLANDMapSF<- st_transform(ENGLANDMapSF, 27700)
+names(ENGLANDMapSF)[2] <- c("GSS_CODE")
+```
+
+Join main dataset and map data
+
+```{r include=FALSE,message=FALSE,warning=FALSE}
+#Join main dataset and map data
+
+ObesityMAP<-merge(ENGLANDMapSF, childdata2, by.x="GSS_CODE", by.y="GSS_CODE")
+#ObesityMAP <- na.omit(ObesityMAP)
+
+modeldata<- childdata2[,-c(2)]
+
+```
+
+Appendix Table 1: Univariate regression
+```{r warning=FALSE}
+#Variable selection.
+#Univariate regression first.
+
+model_1 <- lm(root_ob ~ `Density of fast food outlets`, data = modeldata)#significant
+summary(model_1)
+model_2 <- lm(root_ob ~ `Active rate`, data = modeldata)#significant
+summary(model_2)
+model_3 <- lm(root_ob ~ `Percentage of White children`, data = modeldata)#significant
+summary(model_3)
+model_4 <- lm(root_ob ~ `Percentage of Mixed children`, data = modeldata)#significant
+summary(model_4)
+model_5 <- lm(root_ob ~ `Percentage of Asian children`, data = modeldata)#significant
+summary(model_5)
+model_6 <- lm(root_ob ~ `Percentage of African children`, data = modeldata)#significant
+summary(model_6)
+model_7 <- lm(root_ob ~ `IMD income average score`, data = modeldata)#significant
+summary(model_7)
+model_8 <- lm(root_ob ~ `IMD employment average score`, data = modeldata)#significant
+summary(model_8)
+model_9 <- lm(root_ob ~ `IMD education average score`, data = modeldata)#significant
+summary(model_9)
+model_10 <- lm(root_ob ~ `IMD health average score`, data = modeldata)#significant
+summary(model_10)
+model_11 <- lm(root_ob ~ `IMD crime average score`, data = modeldata)#significant
+summary(model_11)                                 
+model_12 <- lm(root_ob ~ `IMD housing average score`, data = modeldata)#insignificant
+summary(model_12)                       
+model_13 <- lm(root_ob ~ `IMD living average score`, data = modeldata)#significant
+summary(model_13) 
+model_14 <- lm(root_ob ~ `IMD IDACI average score`, data = modeldata)#significant
+summary(model_14)                           
+model_15 <- lm(root_ob ~ `Fairly active rate`, data = modeldata)#insignificant
+summary(model_15) 
+model_16 <- lm(root_ob ~ `Less active rate`, data = modeldata)#significant
+summary(model_16)
+```
+
+Check correlation of model variables.
+```{r warning=FALSE,include=FALSE,message=FALSE}
+regvars <- modeldata[,c("Density of fast food outlets",
+                        "Percentage of White children",
+                        "Percentage of Mixed children",
+                        "Percentage of Asian children",
+                        "Percentage of African children",
+                        "IMD income average score",
+                        "IMD employment average score",
+                        "IMD education average score",
+                        "IMD health average score",
+                        "IMD crime average score",
+                        "IMD living average score",
+                        "IMD IDACI average score",
+                        "Active rate",
+                        "Less active rate")]
+
+str(regvars)
+
+#compute the correlation matrix for the two variables of interest
+corr <- cor(regvars, use="complete.obs", method="pearson")
+```
+
+##Figure 2.
+Visualise the correlation matrix
+```{r warning=FALSE,message=FALSE}
+#visualise the correlation matrix
+ggcorrplot(corr, hc.order = TRUE, type = "lower",
+           outline.col = "white",tl.cex = 11,
+           colors = c("#6D9EC1", "white", "#E46726"))
+```
+
+Final model selection based on F test, adjusted R etc.
+
+```{r warning=FALSE}
+#Final model selection based on F test, adjusted R etc.
+model_a <-lm(root_ob ~`Density of fast food outlets`+	`Percentage of Mixed children`+	`Percentage of Asian children`+	`Percentage of African children`+	`IMD education average score`+	`IMD health average score`+	`IMD crime average score`+`IMD living average score`+	`IMD IDACI average score`+`Less active rate`, data = modeldata)
+summary(model_a)
+```
+
+
+```{r warning=FALSE}
+#Remove less active rate
+model_b <-lm(root_ob ~`Density of fast food outlets`+	`Percentage of Mixed children`+	`Percentage of Asian children`+	`Percentage of African children`+	`IMD education average score`+	`IMD health average score`+	`IMD crime average score`+`IMD living average score`+	`IMD IDACI average score`, data = modeldata)
+summary(model_b)
+```
+
+
+```{r warning=FALSE} 
+#Remove fast food shop density
+model_c <-lm(root_ob ~	`Percentage of Mixed children`+	`Percentage of Asian children`+	`Percentage of African children`+	`IMD education average score`+	`IMD health average score`+	`IMD crime average score`+`IMD living average score`+	`IMD IDACI average score`, data = modeldata)
+summary(model_c) 
+```
+
+
+```{r warning=FALSE}
+#Remove living average score
+model_d <-lm(root_ob ~	`Percentage of Mixed children`+	`Percentage of Asian children`+	`Percentage of African children`+	`IMD education average score`+	`IMD health average score`+	`IMD crime average score`+	`IMD IDACI average score`, data = modeldata)
+summary(model_d) 
+```
+
+
+```{r warning=FALSE}
+#Remove crime average score instead of living average score
+model_e <-lm(root_ob ~	`Percentage of Mixed children`+	`Percentage of Asian children`+	`Percentage of African children`+	`IMD education average score`+	`IMD health average score`+	`IMD living average score`+	`IMD IDACI average score`, data = modeldata)
+summary(model_e) 
+```
+
+
+```{r warning=FALSE}
+#Remove crime average score and living average score
+model_f <-lm(root_ob ~	`Percentage of Mixed children`+	`Percentage of Asian children`+	`Percentage of African children`+	`IMD education average score`+	`IMD health average score` +	`IMD IDACI average score`, data = modeldata)
+summary(model_f)
+```
+
+Stepwise AIC and best subset variable selection (reference only).
+```{r warning=FALSE}
+# stepwise aic regression
+#Run for all variables
+ols_step_both_aic(model_a)
+k <- ols_step_both_aic(model_a)
+ols_step_both_aic(model_a, details = FALSE)
+
+ols_step_best_subset(model_a)
+#Run for model f
+ols_step_both_aic(model_f)
+k <- ols_step_both_aic(model_f)
+ols_step_both_aic(model_f, details = FALSE)
+
+ols_step_best_subset(model_f)
+```
+
+
+```{r warning=FALSE}
+#save the residuals into dataframe
+finalmodel<- lm(root_ob ~	`Percentage of Mixed children`+	`Percentage of Asian children`+	`Percentage of African children`+	`IMD education average score`+	`IMD health average score` +	`IMD IDACI average score`, data = modeldata)
+summary(finalmodel) 
+#Check multicollinearity
+vif(finalmodel)
+ObesityMAP$`Model residuals`<- finalmodel$residuals
+```
+
+Figure 3. Diagnostic plots for OLS regression model
+```{r warning=FALSE}
+#residual plot
+par(mfrow = c(2, 2))  # Split the plotting panel into a 2 x 2 grid
+plot(finalmodel)  # Plot the model residuals
+```
+
+Cross-validation of model
+```{r warning=FALSE}
+###Cross-validation of model
+#####Cross-Validation 
+set.seed(48)
+regressdata<-modeldata[,c("Percentage of Mixed children","Percentage of Asian children",
+                          "Percentage of African children","IMD education average score",
+                          "IMD health average score","IMD IDACI average score",
+                       "root_ob" )]
+model<- train(root_ob ~	`Percentage of Mixed children`+	`Percentage of Asian children`+	`Percentage of African children`+	`IMD education average score`+	`IMD health average score` +	`IMD IDACI average score`,
+               regressdata,
+              method="lm", 
+              trControl=trainControl(method="repeatedcv",
+                                     number=10,
+                                     verboseIter=TRUE))
+summary(model)
+```
+
+#print R2, MAE and RMSE
+```{r warning=FALSE}
+#print R2, MAE and RMSE
+print(model)
+```
+
+#Now check for spatial auto-correlation
+```{r warning=FALSE}
+
+ObesityMAP <- as(ObesityMAP,"Spatial")
+```
+
+
+```{r warning=FALSE}
+names(ObesityMAP)
+#Calculate centriod of each LA.
+coordsW <- coordinates(ObesityMAP)
+plot(coordsW)
+
+
+#Neighbours list of queens contiguity
+LWard_nb <- poly2nb(ObesityMAP, queen=T)
+
+#and nearest neighbours
+knn_wards <- knearneigh(coordsW, k=4)
+LWard_knn <- knn2nb(knn_wards)
+
+#plot and add a map
+plot(LWard_nb, coordinates(coordsW), col="red")
+plot(LWard_knn, coordinates(coordsW), col="blue")
+plot(ObesityMAP)
+
+
+#create a spatial weights matrix 
+Lward.queens_weight <- nb2listw(LWard_nb, style="C",zero.policy=TRUE)
+Lward.knn_4_weight <- nb2listw(LWard_knn, style="C",zero.policy=TRUE)
+```
+
+#Run Moran's I using the residuals from our final model
+#first using queens neighbours
+```{r warning=FALSE}
+
+moran.test(ObesityMAP@data$`Model.residuals`, Lward.queens_weight,zero.policy=TRUE)
+```
+
+#Then knn = 4
+```{r warning=FALSE}
+moran.test(ObesityMAP@data$`Model.residuals`, Lward.knn_4_weight,zero.policy=TRUE)
+```
+
+##GWR(Andy MacLachlan and Adam Dennett,2019)
+```{r warning=FALSE}
+#calculate kernel bandwidth
+GWRbandwidth <- gwr.sel(root_ob ~	`Percentage of Mixed children`+	`Percentage of Asian children`+	`Percentage of African children`+	`IMD education average score`+	`IMD health average score` +	`IMD IDACI average score`,data = modeldata,coords=coordsW,adapt=T)
+
+#run the gwr model
+gwr.model = gwr(root_ob ~	`Percentage of Mixed children`+	`Percentage of Asian children`+	`Percentage of African children`+	`IMD education average score`+	`IMD health average score` +	`IMD IDACI average score`,data = modeldata,coords=coordsW, adapt=GWRbandwidth, hatmatrix=TRUE, se.fit=TRUE)
+
+#print the results of the model
+gwr.model
+```
+
+#Attach coefficients to original dataframe
+```{r warning=FALSE}
+results<-as.data.frame(gwr.model$SDF)
+names(results)
+ObesityMAP@data$coefr2<-results$localR2
+ObesityMAP@data$coefmixed<-results$X.Percentage.of.Mixed.children.
+ObesityMAP@data$coefafrican<-results$X.Percentage.of.African.children.
+ObesityMAP@data$coefedu<-results$X.IMD.education.average.score.
+ObesityMAP@data$coefhealth<-results$X.IMD.health.average.score.
+ObesityMAP@data$coefasian<-results$X.Percentage.of.Asian.children.
+ObesityMAP@data$coefidaci<-results$X.IMD.IDACI.average.score.
+
+```
+## Maps
+#Local R-squared
+```{r warning=FALSE}
+tmap_mode("view")
+tm_shape(ObesityMAP) +
+  tm_polygons(col = "coefr2", title = "Local R-squared", breaks = c(-Inf,0.7,0.75,0.8,0.85,0.9,0.95, Inf), palette = "YlGnBu", alpha = 1)+
+  tm_format_World(title = NA,legend.width = 0.8, scale = 1,
+                  legend.position = c("left", "top"))+tm_scale_bar()+tm_compass()
+```
+```{r warning=FALSE}
+tmap_mode("view")
+tm_shape(ObesityMAP) +
+  tm_polygons(col = "coefafrican", title = "Coefficient for percentage of African children", palette = "RdBu", alpha = 1)+
+  tm_format_World(title = NA,legend.width = 0.8, scale = 1,
+                  legend.position = c("left", "top"))+tm_scale_bar()+tm_compass()
+```
+
+#Percentage of mixed children
+```{r warning=FALSE}
+tm_shape(ObesityMAP) +
+  tm_polygons(col = "coefmixed", title = "Coefficient for percentage of Mixed children",breaks = c(-Inf,-20,-10,-5,0,5,10,15, Inf),  palette = "RdBu", alpha = 1)+
+  tm_format_World(title = NA,legend.width = 0.8, scale = 1,
+                legend.position = c("left", "top"))+tm_scale_bar()+tm_compass()
+```
+
+#Percentage of Asian children
+```{r warning=FALSE}
+tm_shape(ObesityMAP) +
+  tm_polygons(col = "coefasian", title = "Coefficient for percentage of Asian children",  palette = "RdBu", alpha = 1)+
+  tm_format_World(title = NA,legend.width = 0.8, scale = 1,
+                legend.position = c("left", "top"))+tm_scale_bar()+tm_compass()
+```
+
+#IDACI score
+```{r warning=FALSE}
+tm_shape(ObesityMAP) +
+  tm_polygons(col = "coefidaci", title = "Coefficient for IMD IDACI average acore", breaks = c(-Inf,-2,0,2,4,6,8, Inf), palette = "RdBu", alpha = 1)+
+  tm_format_World(title = NA,legend.width = 0.8, scale = 1,
+                  legend.position = c("left", "top"))+tm_scale_bar()+tm_compass()
+```
+
+#IMD Health score
+```{r warning=FALSE}
+tm_shape(ObesityMAP) +
+  tm_polygons(col = "coefhealth", title = "Coefficient for IMD Health average acore",  palette = "RdBu", alpha = 1)+
+  tm_format_World(title = NA,legend.width = 0.8, scale = 1,
+                  legend.position = c("left", "top"))+tm_scale_bar()+tm_compass()
+```
+
+#IMD education
+```{r warning=FALSE}
+tm_shape(ObesityMAP) +
+  tm_polygons(col = "coefedu", title = "Coefficient for IMD Education average acore", palette = "RdBu", alpha = 1)+
+  tm_format_World(title = NA,legend.width = 0.8, scale = 1,
+                  legend.position = c("left", "top"))+tm_scale_bar()+tm_compass()
+```
+
+
+## SECTION 3: Cluster analysis
+```{r warning=FALSE}
+#render("Report code.Rmd", output_dir = output_dir, params = list(output_dir = output_dir))
+modeldata2<- childdata2[,c("GSS_CODE","root_ob","Percentage of Mixed children","Percentage of Asian children","Percentage of African children",
+"IMD education average score","IMD health average score","IMD IDACI average score")]
+```
+Cluster analysis(Guy Lansley and James Cheshire,2018)
+```{r warning=FALSE,message=FALSE}
+clusterdata<- childdata2[,c("root_ob","Percentage of Mixed children","Percentage of Asian children","Percentage of African children",
+"IMD education average score","IMD health average score","IMD IDACI average score")]
+value <- colnames(clusterdata)
+# creates a new data frame
+stand_data <- clusterdata
+for(i in 1: ncol (clusterdata)){
+stand_data[, value[i]] <- scale(as.numeric(modeldata2[, value[i]]))
+}
+
+
+```
+
+#K-means clustering (k=5)
+```{r warning=FALSE}
+
+Km <- kmeans(stand_data, 5, nstart = 25, iter.max = 1000)
+KmClusters <- as.matrix(Km$cluster)
+KmClusters <- as.data.frame(KmClusters)
+KmCenters <- as.matrix(Km$centers)
+KmCenters <- as.data.frame(KmCenters)
+#Number of LAs in each cluster
+table(KmClusters)
+```
+
+#Validate choice of k
+```{r warning=FALSE}
+# Total within-cluster sum of square
+wss <- NULL
+for (i in 1:15) wss[i] <- kmeans(stand_data,centers = i,iter.max = 1000)$tot.withinss
+plot(1:15, wss, type = "b", pch = 19, xlab = "Number of Clusters",
+ylab = "Total within-cluster sum of squares")
+```
+
+
+
+#Cluster plot of the first 2 principal components
+```{r warning=FALSE}
+library(cluster)
+clusplot(stand_data,Km$cluster, color = TRUE, shade = FALSE,
+labels = 4, lines = 0, plotchar = FALSE)
+```
+```{r warning=FALSE}
+#More cluster plot
+library(ggplot2)
+library(factoextra)
+fviz_cluster(Km, data = stand_data, geom = "point", ellipse = F, pointsize = 0.5,
+ggtheme = theme_classic())
+```
+
+
+#Radial plot for each group
+
+```{r warning=FALSE}
+library(plotrix)
+KmCenters[5,]<- c(0)
+par(cex.axis = 0.8, cex.lab = 0.8)
+radial.plot(KmCenters[c(1,5),], labels = colnames(KmCenters),
+boxed.radial = FALSE, show.radial.grid = TRUE,
+line.col = c("blue", "red"), radlab = TRUE,
+rp.type = "p", show.grid.labels = 3)
+```
+##Creates a map of cluster groups
+```{r warning=FALSE}
+#Join the cluster labels to the GSS codes
+GSScode<- childdata2[,c(1,2)]
+Classification <- as.data.frame(cbind(as.character(GSScode[,1]), KmClusters[,1]))
+names(Classification) <- c("GSS_CODE", "Classification")
+
+OA.Class<- merge(ObesityMAP, Classification, by.x = "GSS_CODE", by.y = "GSS_CODE",duplicateGeoms = TRUE)
+
+# creates a map in R
+tm_shape(OA.Class) +
+  tm_polygons(col = "Classification", title = "Cluster groups", palette = "RdBu", alpha = 1)+
+  tm_format_World(title = NA,legend.width = 0.8, scale = 1,
+                  legend.position = c("left", "top"))+tm_scale_bar()+tm_compass()
+```
+
+Reference:
+Andy MacLachlan and Adam Dennett, 2019. CASA0005 Geographic Information Systems and Science. Available from: https://andrewmaclachlan.github.io/CASA0005repo/index.html
+
+Guy Lansley and James Cheshire,2018.Creating a Geodemographic Classification Using K-means Clustering in R.Available from: https://data.cdrc.ac.uk/tutorial/creating-a-geodemographic-classification-using-k-means-clustering-in-r
+
